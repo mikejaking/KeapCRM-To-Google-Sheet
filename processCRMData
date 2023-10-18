@@ -1,0 +1,203 @@
+/** 
+ * Michael Acland King
+ * 18-10-2023
+ * Version 1
+ * JavaScript
+ * 
+ * Description: This script builds out the dataset for the Looker Studio KeapCRM report.
+ * 
+ * Google Sheet: https://docs.google.com/spreadsheets/d/1rMgIkrqRoRaFNwsN6e4VKYE17gX9J0urcUXxC0XAB1M/
+ * Looker Studio: https://lookerstudio.google.com/reporting/210b2825-c918-4316-b94a-879b34f471c5/
+ * 
+**/
+
+
+/**
+ * Main function to process CRM Data.
+ */
+function processCRMData() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Extract CRM data and Google Campaign Spend data
+  var crmData = getSheetData(ss, "CRM Data");
+  var spendData = getSheetData(ss, "Google Campaign Spend");
+
+  if (!crmData || !spendData) {
+    Logger.log("Required sheets not found");
+    return;
+  }
+
+  // Aggregate spend data by date
+  var aggregatedData = aggregateSpendData(spendData);
+
+  // Get or create the "Calculated Data" sheet
+  var calculatedDataSheet = getOrCreateSheet(ss, "Calculated Data");
+
+  // Process the CRM data and create the final output
+  var outputData = processAndFormatData(crmData, aggregatedData);
+
+  // Write the data to the Calculated Data sheet
+  calculatedDataSheet.getRange(1, 1, outputData.length, outputData[0].length).setValues(outputData);
+}
+
+/**
+ * Fetches data from a specific sheet.
+ * @param {Object} spreadsheet - The active spreadsheet object.
+ * @param {String} sheetName - Name of the sheet from which data should be fetched.
+ * @returns {Array} - 2D array of sheet data or null if sheet doesn't exist.
+ */
+function getSheetData(spreadsheet, sheetName) {
+  var sheet = spreadsheet.getSheetByName(sheetName);
+  return sheet ? sheet.getDataRange().getValues() : null;
+}
+
+/**
+ * Aggregates the Google Campaign Spend data by date.
+ * @param {Array} spendData - Data from Google Campaign Spend sheet.
+ * @returns {Object} - Aggregated spend data.
+ */
+function aggregateSpendData(spendData) {
+  var aggregated = {};
+
+  for (var i = 1; i < spendData.length; i++) {
+    var dateFormatted = Utilities.formatDate(new Date(spendData[i][3]), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    if (!aggregated[dateFormatted]) {
+      aggregated[dateFormatted] = {
+        Spend: 0,
+        Clicks: 0,
+        Impressions: 0
+      };
+    }
+    aggregated[dateFormatted].Spend += parseFloat(spendData[i][4]);
+    aggregated[dateFormatted].Clicks += parseInt(spendData[i][5]);
+    aggregated[dateFormatted].Impressions += parseInt(spendData[i][6]);
+  }
+  return aggregated;
+}
+
+/**
+ * Fetches the specified sheet or creates it if it doesn't exist.
+ * @param {Object} spreadsheet - The active spreadsheet object.
+ * @param {String} sheetName - Name of the sheet.
+ * @returns {Object} - Sheet object.
+ */
+function getOrCreateSheet(spreadsheet, sheetName) {
+  var sheet = spreadsheet.getSheetByName(sheetName);
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet(sheetName);
+  } else {
+    sheet.clear();
+  }
+  return sheet;
+}
+
+function processAndFormatData(crmData, aggregatedData) {
+  var tagsArray = [
+    'High Quality Lead',
+    'Medium Quality Lead',
+    'Low Quality Lead',
+    'Investor',
+    'Agent',
+    'Dormant',
+    'Non-Sales',
+    'Appointment Set',
+    'Yes, income',
+    'Net Worth',
+    'Income'
+  ]; 
+
+  /*var tagsArray = [
+    'High Quality Lead',
+    'Medium Quality Lead',
+    'Low Quality Lead'
+  ];*/
+  
+  var additionalHeaders = ['Spend', 'Clicks', 'Impressions'];
+  var headers = crmData[0];
+  var output = [['ID', 'CRM Tags', 'Creation Date'].concat(tagsArray).concat(additionalHeaders)];
+
+  // Pre-compute the counts for each date from CRM data
+  var dateCounts = {};
+  crmData.forEach(function(r) {
+    var date = Utilities.formatDate(new Date(r[5]), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    if (dateCounts[date]) {
+      dateCounts[date]++;
+    } else {
+      dateCounts[date] = 1;
+    }
+  });
+
+  for (var i = 1; i < crmData.length; i++) {
+    var row = crmData[i];
+    for (var j = 1; j <= 4; j++) {
+      if (row[j] && tagsArray.includes(row[j])) {
+        var newRow = createDataRow(row, j, headers, tagsArray, aggregatedData, dateCounts);
+        output.push(newRow);
+      }
+    }
+  }
+
+  // Calculate the counts for each date in the output
+  var outputDateCounts = {};
+  for (var i = 1; i < output.length; i++) {
+    var date = output[i][2];
+    if (outputDateCounts[date]) {
+      outputDateCounts[date]++;
+    } else {
+      outputDateCounts[date] = 1;
+    }
+  }
+
+  // Update the rows in output to reflect the correct calculations for Spend, Clicks, and Impressions
+  for (var i = 1; i < output.length; i++) {
+    var creationDate = output[i][2];
+    if (aggregatedData[creationDate]) {
+      var recordsCountForDate = outputDateCounts[creationDate];
+      output[i][output[i].length - 3] = aggregatedData[creationDate].Spend / recordsCountForDate;
+      output[i][output[i].length - 2] = aggregatedData[creationDate].Clicks / recordsCountForDate;
+      output[i][output[i].length - 1] = aggregatedData[creationDate].Impressions / recordsCountForDate;
+    }
+  }
+
+  return output;
+}
+
+
+/**
+ * Create a single row of data for the Calculated Data sheet.
+ * @param {Array} row - Single row of data from CRM Data sheet.
+ * @param {Number} colIndex - Index of the column being processed.
+ * @param {Array} headers - Headers from CRM Data sheet.
+ * @param {Array} tagsArray - Array of possible tags.
+ * @param {Object} aggregatedData - Aggregated spend data.
+ * @param {Object} dateCounts - Counts of occurrences for each date.
+ * @returns {Array} - Single row of processed data.
+ */
+function createDataRow(row, colIndex, headers, tagsArray, aggregatedData, dateCounts) {
+  var id = row[0];
+  var rawCreationDate = new Date(row[5]);
+  var creationDate = Utilities.formatDate(rawCreationDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  
+  // Only generate tagValue if the value is present in the tagsArray
+  var tagValue = (tagsArray.includes(row[colIndex])) ? headers[colIndex] + ": " + row[colIndex] : "";
+  var newRow = [id, tagValue, creationDate];
+
+  tagsArray.forEach(function(tag) {
+    if (row[colIndex] === tag) {
+      newRow.push(1);
+    } else {
+      newRow.push(0);
+    }
+  });
+
+  if (aggregatedData[creationDate]) {
+    var recordsCountForDate = dateCounts[creationDate];
+    newRow.push(aggregatedData[creationDate].Spend / recordsCountForDate);
+    newRow.push(aggregatedData[creationDate].Clicks / recordsCountForDate);
+    newRow.push(aggregatedData[creationDate].Impressions / recordsCountForDate);
+  } else {
+    newRow = newRow.concat(['', '', '']);
+  }
+
+  return newRow;
+}
