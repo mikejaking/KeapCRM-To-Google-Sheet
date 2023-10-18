@@ -1,0 +1,180 @@
+/** 
+ * Michael Acland King
+ * 18-10-2023
+ * Version 1
+ * JavaScript
+ * 
+ * Description: This script pulls data from KeapCRM into Google Sheets.
+ * 
+ * Google Sheet: https://docs.google.com/spreadsheets/d/1rMgIkrqRoRaFNwsN6e4VKYE17gX9J0urcUXxC0XAB1M/
+ * Looker Studio: https://lookerstudio.google.com/reporting/210b2825-c918-4316-b94a-879b34f471c5/
+ * 
+**/
+
+/**
+ * Fetch data from Keap CRM and populate a Google Spreadsheet.
+ * 
+ */
+function fetchKeapCRMData() {
+    // Replace with your Infusionsoft subdomain and API Key
+    var subdomain = "ADD YOUR SUBDOMAIN";
+    var apiKey = "ADD YOUR API KEY";
+    var apiUrl = "https://" + subdomain + ".infusionsoft.com/api/xmlrpc/v1";
+    var pageNumber = 0;
+    var recordsPerPage = 1000;
+    var startDate = "2022-10-01T00:00:00";  // Start date using the following format "2022-10-01T00:00:00";
+
+    // Define headers for the spreadsheet
+    var crmData = [["ID", "Contact Type", "Lead Quality", "Prospect Type", "Qualified Accredited Investor", "Creation Date"]];
+
+    while (true) {
+        // Generate XML payload for the request
+        // var xmlPayload = generatePayload(apiKey, pageNumber, recordsPerPage);
+        var xmlPayload = generatePayload(apiKey, pageNumber, recordsPerPage, startDate);
+
+        // Configure fetch options
+        var options = {
+            "method": "post",
+            "contentType": "text/xml",
+            "payload": xmlPayload,
+            "muteHttpExceptions": true
+        };
+
+        // Send the API request
+        var response = UrlFetchApp.fetch(apiUrl, options);
+
+        if (response.getResponseCode() != 200) {
+            // If we get an unexpected response, exit the loop
+            break;
+        }
+
+        // Parse the response XML
+        var contacts = parseXMLResponse(response.getContentText());
+        
+        if (contacts.length == 0) {
+            break; // Exit the loop if no more records are found
+        }
+
+        // Append contacts to our data array
+        crmData = crmData.concat(contacts);
+
+        pageNumber++;
+    }
+
+    // Update the spreadsheet with the fetched data
+    updateSpreadsheet(crmData);
+}
+
+function generatePayload(apiKey, pageNumber, recordsPerPage, startDate) {
+    return '<?xml version="1.0" encoding="UTF-8"?>' +
+    '<methodCall>' +
+    '<methodName>DataService.query</methodName>' +
+    '<params>' +
+    '<param><value><string>' + apiKey + '</string></value></param>' +
+    '<param><value><string>Contact</string></value></param>' +
+    '<param><value><int>' + recordsPerPage + '</int></value></param>' +
+    '<param><value><int>' + pageNumber + '</int></value></param>' +
+    '<param><value><struct>' + 
+    '<member>' + 
+    '<name>DateCreated</name>' + 
+    '<value><string>' + '~>=~' + startDate + '</string></value>' + 
+    '</member>' + 
+    '</struct></value></param>' +
+    '<param><value><array><data>' +
+    '<value><string>Id</string></value>' +
+    '<value><string>ContactType</string></value>' +
+    '<value><string>_LeadQuality</string></value>' +
+    '<value><string>_ProspectType</string></value>' +
+    '<value><string>_QualifiedAccreditedInvestor</string></value>' +
+    '<value><string>DateCreated</string></value>' +
+    '</data></array></value></param>' +
+    '</params>' +
+    '</methodCall>';
+}
+
+/**
+ * Parses the XML response and extracts contact data.
+ * 
+ * @param {string} xmlResponse - The XML response from the API.
+ * @returns {Array} An array of contact data.
+ */
+function parseXMLResponse(xmlResponse) {
+    var document = XmlService.parse(xmlResponse);
+    var root = document.getRootElement();
+
+    var dataArray = root.getChild('params');
+    if(!dataArray) return [];
+    
+    dataArray = dataArray.getChild('param').getChild('value').getChild('array').getChild('data').getChildren('value');
+    
+    var contacts = [];
+    for (var i = 0; i < dataArray.length; i++) {
+        var contact = extractContactData(dataArray[i]);
+        if (contact) {
+            contacts.push(contact);
+        }
+    }
+
+    return contacts;
+}
+
+/**
+ * Extracts individual contact data from XML element.
+ * 
+ * @param {Object} dataElement - The XML element for a contact.
+ * @returns {Array|null} An array of contact data or null if extraction fails.
+ */
+function extractContactData(dataElement) {
+    var contactStruct = dataElement.getChild('struct');
+    if (!contactStruct) return null;
+
+    contactStruct = contactStruct.getChildren('member');
+    var contactData = {};
+
+    for (var j = 0; j < contactStruct.length; j++) {
+        var nameElement = contactStruct[j].getChild('name');
+        if (!nameElement) continue;
+
+        var name = nameElement.getText();
+        var valueElement = contactStruct[j].getChild('value');
+        if (!valueElement) continue;
+
+        var value;
+        if (name === "Id" && valueElement.getChild('i4')) {
+            value = valueElement.getChild('i4').getText();
+        } else if (name === "DateCreated" && valueElement.getChild('dateTime.iso8601')) {
+            value = valueElement.getChild('dateTime.iso8601').getText();
+            value = value.substring(0, 4) + '-' + value.substring(4, 6) + '-' + value.substring(6, 8);
+        } else {
+            value = valueElement.getText();
+        }
+        contactData[name] = value;
+    }
+
+    return [
+        contactData["Id"], 
+        contactData["ContactType"], 
+        contactData["_LeadQuality"], 
+        contactData["_ProspectType"], 
+        contactData["_QualifiedAccreditedInvestor"], 
+        contactData["DateCreated"]
+    ];
+}
+
+/**
+ * Updates the Google Spreadsheet with the fetched CRM data.
+ * 
+ * @param {Array} crmData - The CRM data to be added to the spreadsheet.
+ */
+function updateSpreadsheet(crmData) {
+    var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    var crmSheet = spreadsheet.getSheetByName("CRM Data");
+
+    if (!crmSheet) {
+        crmSheet = spreadsheet.insertSheet("CRM Data");
+    } else {
+        crmSheet.clearContents();
+    }
+
+    crmSheet.getRange(1, 1, crmData.length, 6).setValues(crmData);
+}
